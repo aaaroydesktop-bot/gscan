@@ -1,5 +1,8 @@
-colorama
-holehe
-requests
 aiohttp
+aiofiles
+aiosqlite
+beautifulsoup4
+lxml
+colorama
 tqdm
+tenacity
