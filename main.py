@@ -92,12 +92,24 @@ def scan_email():
 def check_single_site(site_name, url, headers):
     try:
         response = requests.get(url, headers=headers, timeout=8)
+        
         if response.status_code == 200:
-            # কিছু সাইট 200 রেসপন্স দেয় কিন্তু পেজে লেখে "Not Found", সেগুলোকে স্কিপ করার ট্রিক
             if "page not found" not in response.text.lower() and "doesn't exist" not in response.text.lower():
                 return f"{Fore.GREEN}[+] {site_name}: {Fore.WHITE}{url}"
-    except:
+        
+        # সিকিউরিটি ব্লক করলে দেখাবে
+        elif response.status_code == 403:
+            return f"{Fore.YELLOW}[!] {site_name}: Blocked by Security/Cloudflare (403)"
+        
+        # বেশি রিকোয়েস্ট পাঠালে ব্লক করলে দেখাবে
+        elif response.status_code == 429:
+            return f"{Fore.YELLOW}[!] {site_name}: Rate Limited! Too many requests (429)"
+            
+    except requests.exceptions.Timeout:
+        return f"{Fore.RED}[!] {site_name}: Connection Timed Out"
+    except Exception:
         pass
+    
     return None
 
 def scan_username():
