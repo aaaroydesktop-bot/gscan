@@ -1,48 +1,56 @@
-# Gscan v10.1 (Safe Educational Edition)
+# Gscan v10.2 Final (Safe Educational Edition)
 
 
 #!/usr/bin/env python3
 """
-Gscan v10.1 - Safe Async OSINT Framework
-Educational / authorized security research only.
+Gscan v10.2 Final
+Safe Async OSINT Framework
+Educational / Authorized Security Research Only
 
 Features:
-- Async scanning with aiohttp
-- SQLite caching
-- JSON export
+- Async username scanning
+- SQLite cache with expiration
+- JSON + CSV export
 - Rate limiting
-- Site fingerprint validation
-- Public profile detection only
-- No stealth / bypass / CAPTCHA evasion
+- Retry/backoff
+- Site validators
+- Safe subprocess usage
+- Better error handling
+- Termux/Linux compatible
 """
 
 import os
 import sys
+import csv
 import json
 import asyncio
 import random
-from datetime import datetime
+import subprocess
+from datetime import datetime, timedelta
 
 import aiohttp
 import aiofiles
 import aiosqlite
 from bs4 import BeautifulSoup
 from colorama import Fore, Style, init
+from tenacity import retry, stop_after_attempt, wait_exponential
 from tqdm.asyncio import tqdm_asyncio
 
+# ================= INIT =================
 init(autoreset=True)
 
 # ================= CONFIG =================
 MAX_CONCURRENT = 8
-TIMEOUT = 10
+TIMEOUT = 12
 CACHE_DB = "gscan_cache.db"
+CACHE_EXPIRE_HOURS = 24
 
 sem = asyncio.Semaphore(MAX_CONCURRENT)
 
 UA_LIST = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/121.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Safari/537.36"
 ]
 
 # ================= SITE DATABASE =================
@@ -55,7 +63,6 @@ SITES = {
     "CodePen": "https://codepen.io/{u}",
     "Replit": "https://replit.com/@{u}",
     "Pinterest": "https://www.pinterest.com/{u}/",
-    "TikTok": "https://www.tiktok.com/@{u}",
     "Twitch": "https://www.twitch.tv/{u}",
     "Steam": "https://steamcommunity.com/id/{u}",
     "Chess.com": "https://www.chess.com/member/{u}",
@@ -65,35 +72,30 @@ SITES = {
     "Codeforces": "https://codeforces.com/profile/{u}",
     "Kaggle": "https://www.kaggle.com/{u}",
     "DockerHub": "https://hub.docker.com/u/{u}",
-    "NPM": "https://www.npmjs.com/~{u}",
-    "PyPI": "https://pypi.org/user/{u}/",
-    "Flickr": "https://www.flickr.com/people/{u}/",
     "Behance": "https://www.behance.net/{u}",
     "Dribbble": "https://dribbble.com/{u}",
     "ArtStation": "https://www.artstation.com/{u}",
     "TryHackMe": "https://tryhackme.com/p/{u}",
     "HackTheBox": "https://app.hackthebox.com/users/{u}",
-    "ProductHunt": "https://www.producthunt.com/@{u}",
     "Letterboxd": "https://letterboxd.com/{u}/",
     "MyAnimeList": "https://myanimelist.net/profile/{u}",
-    "Goodreads": "https://www.goodreads.com/user/show/{u}",
 }
 
 # ================= VALIDATORS =================
 NEGATIVE_PATTERNS = {
     "GitHub": ["not found"],
-    "Reddit": ["page not found", "nobody on reddit"],
+    "Reddit": ["nobody on reddit", "page not found"],
     "Medium": ["404"],
 }
 
 SITE_VALIDATORS = {
     "GitHub": lambda text: "repositories" in text.lower(),
     "Reddit": lambda text: "karma" in text.lower(),
-    "LeetCode": lambda text: "ranking" in text.lower(),
     "Steam": lambda text: "games" in text.lower(),
+    "LeetCode": lambda text: "ranking" in text.lower(),
 }
 
-# ================= SQLITE CACHE =================
+# ================= SQLITE =================
 async def init_db():
     async with aiosqlite.connect(CACHE_DB) as db:
         await db.execute(
@@ -111,14 +113,26 @@ async def init_db():
 async def get_cache(username):
     async with aiosqlite.connect(CACHE_DB) as db:
         cur = await db.execute(
-            "SELECT result FROM scans WHERE username = ?",
+            "SELECT result, timestamp FROM scans WHERE username = ?",
             (username,)
         )
+
         row = await cur.fetchone()
 
-        if row:
-            return json.loads(row[0])
-        return None
+        if not row:
+            return None
+
+        result, timestamp = row
+
+        try:
+            saved_time = datetime.fromisoformat(timestamp)
+        except ValueError:
+            return None
+
+        if datetime.now() - saved_time > timedelta(hours=CACHE_EXPIRE_HOURS):
+            return None
+
+        return json.loads(result)
 
 
 async def save_cache(username, result):
@@ -133,7 +147,6 @@ async def save_cache(username, result):
         )
         await db.commit()
 
-
 # ================= PARSER =================
 def parse_profile(text, site_name, username):
     soup = BeautifulSoup(text, "lxml")
@@ -144,7 +157,12 @@ def parse_profile(text, site_name, username):
         "signals": []
     }
 
-    # OpenGraph title
+    # Negative fingerprints
+    if site_name in NEGATIVE_PATTERNS:
+        if any(x in text.lower() for x in NEGATIVE_PATTERNS[site_name]):
+            return result
+
+    # OG title
     og = soup.find("meta", property="og:title")
     if og:
         content = og.get("content", "")
@@ -152,30 +170,43 @@ def parse_profile(text, site_name, username):
             result["confidence"] += 25
             result["signals"].append("og:title")
 
-    # Generic title match
+    # HTML title
     if soup.title and username.lower() in soup.title.text.lower():
         result["confidence"] += 20
         result["signals"].append("title")
 
-    # Site-specific validation
-    if site_name in SITE_VALIDATORS:
+    # Site validator
+    validator = SITE_VALIDATORS.get(site_name)
+
+    if validator:
         try:
-            if SITE_VALIDATORS[site_name](text):
+            if validator(text):
                 result["confidence"] += 35
                 result["signals"].append("validator")
         except Exception:
             pass
-
-    # Negative patterns
-    if site_name in NEGATIVE_PATTERNS:
-        if any(x in text.lower() for x in NEGATIVE_PATTERNS[site_name]):
-            return result
 
     if result["confidence"] >= 40:
         result["exists"] = True
 
     return result
 
+# ================= REQUEST =================
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=5)
+)
+async def fetch(session, url, headers):
+    async with session.get(
+        url,
+        headers=headers,
+        timeout=TIMEOUT,
+        allow_redirects=True
+    ) as response:
+
+        text = await response.text(errors="ignore")
+
+        return response, text
 
 # ================= CHECKER =================
 async def check_site(session, site_name, url_template, username):
@@ -189,33 +220,31 @@ async def check_site(session, site_name, url_template, username):
         }
 
         try:
-            async with session.get(
-                url,
-                headers=headers,
-                timeout=TIMEOUT,
-                allow_redirects=True
-            ) as resp:
+            response, text = await fetch(session, url, headers)
 
-                if resp.status == 404:
-                    return None
+            if response.status == 404:
+                return None
 
-                text = await resp.text(errors="ignore")
+            parsed = parse_profile(text, site_name, username)
 
-                parsed = parse_profile(text, site_name, username)
+            if parsed["exists"]:
+                return {
+                    "site": site_name,
+                    "url": str(response.url),
+                    "confidence": parsed["confidence"],
+                    "signals": parsed["signals"]
+                }
 
-                if parsed["exists"]:
-                    return {
-                        "site": site_name,
-                        "url": str(resp.url),
-                        "confidence": parsed["confidence"],
-                        "signals": parsed["signals"]
-                    }
+        except aiohttp.ClientError:
+            return None
+
+        except asyncio.TimeoutError:
+            return None
 
         except Exception:
             return None
 
     return None
-
 
 # ================= EXPORT =================
 async def export_results(username, results):
@@ -224,22 +253,31 @@ async def export_results(username, results):
     json_file = f"gscan_{username}_{ts}.json"
     csv_file = f"gscan_{username}_{ts}.csv"
 
+    # JSON
     async with aiofiles.open(json_file, "w", encoding="utf-8") as f:
         await f.write(json.dumps(results, indent=2))
 
-    async with aiofiles.open(csv_file, "w", encoding="utf-8") as f:
-        await f.write("site,url,confidence\n")
+    # CSV
+    with open(csv_file, "w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.writer(csvfile)
+
+        writer.writerow([
+            "site",
+            "url",
+            "confidence"
+        ])
 
         for r in results:
-            await f.write(
-                f"{r['site']},{r['url']},{r['confidence']}\n"
-            )
+            writer.writerow([
+                r["site"],
+                r["url"],
+                r["confidence"]
+            ])
 
     print(Fore.GREEN + f"[+] Saved: {json_file}")
     print(Fore.GREEN + f"[+] Saved: {csv_file}")
 
-
-# ================= SCANNER =================
+# ================= USERNAME SCAN =================
 async def scan_username():
     username = input(Fore.GREEN + "\n[+] Username: ").strip()
 
@@ -250,13 +288,14 @@ async def scan_username():
     await init_db()
 
     cached = await get_cache(username)
+
     if cached:
         print(Fore.CYAN + "[*] Loaded from cache\n")
 
-        for r in cached:
+        for item in cached:
             print(
                 Fore.GREEN +
-                f"[+] {r['site']}: {r['url']} ({r['confidence']}%)"
+                f"[+] {item['site']}: {item['url']} ({item['confidence']}%)"
             )
 
         return
@@ -270,8 +309,8 @@ async def scan_username():
 
     async with aiohttp.ClientSession(connector=connector) as session:
         tasks = [
-            check_site(session, name, url, username)
-            for name, url in SITES.items()
+            check_site(session, site, url, username)
+            for site, url in SITES.items()
         ]
 
         results = await tqdm_asyncio.gather(
@@ -282,29 +321,25 @@ async def scan_username():
 
     found = [r for r in results if r]
 
-    for r in found:
+    for item in found:
         print(
             Fore.GREEN +
-            f"[+] {r['site']}: {r['url']} | Confidence: {r['confidence']}%"
+            f"[+] {item['site']}: {item['url']} | Confidence: {item['confidence']}%"
         )
 
-    print(
-        Fore.CYAN +
-        f"\n[=] Total Found: {len(found)}"
-    )
+    print(Fore.CYAN + f"\n[=] Total Found: {len(found)}")
 
     await save_cache(username, found)
 
     if found:
-        save = input(
+        choice = input(
             Fore.YELLOW + "\n[?] Export JSON + CSV? (y/n): "
         ).lower()
 
-        if save == "y":
+        if choice == "y":
             await export_results(username, found)
 
-
-# ================= EMAIL CHECK =================
+# ================= EMAIL =================
 def email_osint():
     print(Fore.YELLOW + "\n[*] Public email footprint checks only")
 
@@ -314,11 +349,21 @@ def email_osint():
         print(Fore.RED + "[!] Invalid email")
         return
 
-    print(Fore.CYAN + f"[*] Target: {email}")
-    print(Fore.YELLOW + "[*] Tip: Use trusted public tools like Holehe separately.")
+    print(Fore.CYAN + f"[*] Running Holehe for: {email}\n")
 
+    try:
+        subprocess.run(
+            ["holehe", email],
+            check=True
+        )
 
-# ================= MAIN =================
+    except FileNotFoundError:
+        print(Fore.RED + "[!] Holehe not installed")
+
+    except subprocess.CalledProcessError:
+        print(Fore.RED + "[!] Holehe execution failed")
+
+# ================= UI =================
 def banner():
     os.system("clear" if os.name == "posix" else "cls")
 
@@ -330,10 +375,10 @@ def banner():
   \____|____/ \____/_/   \_\_| \_|
     """)
 
-    print(Fore.CYAN + "     Gscan v10.1 - Safe OSINT Framework")
+    print(Fore.CYAN + "     Gscan v10.2 Final - Safe OSINT Framework")
     print(Fore.WHITE + "     Educational & Authorized Use Only\n")
 
-
+# ================= MAIN =================
 def main():
     while True:
         banner()
@@ -359,10 +404,11 @@ def main():
         else:
             print(Fore.RED + "[!] Invalid choice")
 
-
+# ================= ENTRY =================
 if __name__ == "__main__":
     try:
         main()
+
     except KeyboardInterrupt:
         print(Fore.RED + "\n[!] Interrupted\n")
         sys.exit()

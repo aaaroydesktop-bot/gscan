@@ -1,7 +1,7 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
 # =========================================================
-# Gscan v10.1 - Professional Termux Installer
+# Gscan v10.2 Final - Professional Termux Installer
 # Educational / Authorized Security Research Only
 # =========================================================
 
@@ -29,7 +29,7 @@ clear
 
 echo -e "${BLUE}"
 echo "===================================================="
-echo "        Gscan v10.1 Professional Installer"
+echo "        Gscan v10.2 Final Installer"
 echo "===================================================="
 echo -e "${RESET}"
 
@@ -39,6 +39,7 @@ echo
 
 log() {
 mkdir -p "$CONFIG_DIR"
+
 echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
 }
 
@@ -63,7 +64,7 @@ check_internet() {
 
 info "Checking internet connection..."
 
-if ping -c 1 8.8.8.8 >/dev/null 2>&1; then
+if curl -Is https://github.com >/dev/null 2>&1; then
     success "Internet connection OK"
 else
     error "No internet connection detected!"
@@ -94,7 +95,7 @@ pkg upgrade -y
 success "Packages updated"
 }
 
-# ================= REPOS =================
+# ================= REPOSITORIES =================
 
 setup_repositories() {
 
@@ -143,11 +144,11 @@ PY_VERSION=$(python --version)
 success "$PY_VERSION detected"
 }
 
-# ================= MAIN FILE CHECK =================
+# ================= FILE CHECK =================
 
 check_main_file() {
 
-info "Checking main.py..."
+info "Checking project files..."
 
 if [ ! -f "$INSTALL_DIR/main.py" ]; then
     error "main.py not found!"
@@ -156,7 +157,31 @@ if [ ! -f "$INSTALL_DIR/main.py" ]; then
     exit 1
 fi
 
-success "main.py found"
+if [ ! -f "$INSTALL_DIR/requirements.txt" ]; then
+    error "requirements.txt not found!"
+    exit 1
+fi
+
+success "Project files verified"
+}
+
+# ================= CONFIG =================
+
+create_config() {
+
+info "Creating configuration directory..."
+
+mkdir -p "$CONFIG_DIR"
+
+cat > "$CONFIG_DIR/config.json" << EOF
+{
+  "version": "10.2",
+  "install_dir": "$INSTALL_DIR",
+  "created": "$(date)"
+}
+EOF
+
+success "Configuration created"
 }
 
 # ================= VENV =================
@@ -167,7 +192,7 @@ info "Creating virtual environment..."
 
 python -m venv "$CONFIG_DIR/venv"
 
-source "$CONFIG_DIR/venv/bin/activate"
+. "$CONFIG_DIR/venv/bin/activate"
 
 success "Virtual environment created"
 }
@@ -178,7 +203,10 @@ upgrade_pip() {
 
 info "Upgrading pip/setuptools/wheel..."
 
-pip install --upgrade pip setuptools wheel
+pip install --upgrade \
+pip \
+setuptools \
+wheel
 
 success "Pip upgraded"
 }
@@ -189,15 +217,7 @@ install_python_modules() {
 
 info "Installing Python modules..."
 
-pip install \
-aiohttp \
-aiofiles \
-aiosqlite \
-beautifulsoup4 \
-lxml \
-colorama \
-tqdm \
-tenacity
+pip install -r requirements.txt
 
 success "Python modules installed"
 }
@@ -228,17 +248,18 @@ if [[ "$PLAY" == "y" || "$PLAY" == "Y" ]]; then
     pip install playwright playwright-stealth || true
 
     echo
-    echo -e "${YELLOW}[*] Browser binaries may fail on some Termux devices.${RESET}"
+    echo -e "${YELLOW}[*] Chromium install may fail on some Termux devices.${RESET}"
 
     playwright install chromium || true
 
     success "Playwright installation finished"
+
 else
-    info "Skipping Playwright"
+    info "Skipping Playwright installation"
 fi
 }
 
-# ================= GLOBAL COMMAND =================
+# ================= GLOBAL LAUNCHER =================
 
 create_launcher() {
 
@@ -247,7 +268,7 @@ info "Creating global launcher..."
 cat > "$BIN_PATH" << EOF
 #!/data/data/com.termux/files/usr/bin/bash
 
-source "$CONFIG_DIR/venv/bin/activate"
+. "$CONFIG_DIR/venv/bin/activate"
 
 python "$INSTALL_DIR/main.py" "\$@"
 EOF
@@ -255,25 +276,6 @@ EOF
 chmod +x "$BIN_PATH"
 
 success "Global launcher created"
-}
-
-# ================= CONFIG =================
-
-create_config() {
-
-info "Creating configuration directory..."
-
-mkdir -p "$CONFIG_DIR"
-
-cat > "$CONFIG_DIR/config.json" << EOF
-{
-  "version": "10.1",
-  "install_dir": "$INSTALL_DIR",
-  "created": "$(date)"
-}
-EOF
-
-success "Configuration created"
 }
 
 # ================= CLEANUP =================
@@ -305,7 +307,7 @@ echo -e "${CYAN}Manual launch:${RESET}"
 echo -e "${GREEN}python main.py${RESET}"
 
 echo
-echo -e "${CYAN}Install location:${RESET}"
+echo -e "${CYAN}Install directory:${RESET}"
 echo "$INSTALL_DIR"
 
 echo
