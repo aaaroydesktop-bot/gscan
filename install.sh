@@ -3,6 +3,7 @@
 # =========================================================
 # Gscan v10.2 Final - Professional Termux Installer
 # Educational / Authorized Security Research Only
+# Developer: Anupom (Senior Python Security Engineer)
 # =========================================================
 
 set -e
@@ -30,6 +31,7 @@ clear
 echo -e "${BLUE}"
 echo "===================================================="
 echo "        Gscan v10.2 Final Installer"
+echo "        Developed by: Anupom"
 echo "===================================================="
 echo -e "${RESET}"
 

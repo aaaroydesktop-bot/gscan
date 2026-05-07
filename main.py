@@ -2,7 +2,7 @@
 """
 Gscan v11.0 Professional (Safe Educational Edition)
 Advanced Async OSINT Framework with Dynamic Validation & Regex Security.
-Author: Senior Python Security Engineer
+Author: Anupom (Senior Python Security Engineer)
 """
 
 import os
@@ -371,11 +371,11 @@ def banner() -> None:
     os.system("clear" if os.name == "posix" else "cls")
     banner_art = r"""
 [bold magenta]
-   ____                      _   _   _  ___  
-  / ___|___  ___ __ _ _ __  | | | | / |/ _ \ 
- | |  _/ __|/ __/ _` | '_ \ | | | | | | | | |
- | |_| \__ \ (_| (_| | | | || |_| | | | |_| |
-  \____|___/\___\__,_|_| |_| \___/  |_|\___/ 
+    ____                       _   _   _  ___  
+   / ___|___  ___ __ _ _ __   | | | | / |/ _ \ 
+  | |  _/ __|/ __/ _` | '_ \  | | | | | | | | |
+  | |_| \__ \ (_| (_| | | | | | |_| | | | |_| |
+   \____|___/\___\__,_|_| |_|  \___/  |_|\___/ 
 [/bold magenta]
     """
     console.print(banner_art)
