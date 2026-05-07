@@ -16,7 +16,7 @@ import csv
 import shutil
 import importlib.util
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 # ================= 1. DEPENDENCY CHECKER =================
 REQUIRED_PACKAGES = {
